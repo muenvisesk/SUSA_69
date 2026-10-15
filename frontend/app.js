@@ -96,11 +96,25 @@ function setupQuickMenu(){
   }
 }
 
+function normalizeLeaveText(value){
+  const misspelled = "\u0e25\u0e32\u0e1e\u0e31\u0e01\u0e23\u0e49\u0e2d";
+  const corrected = "\u0e25\u0e32\u0e1e\u0e31\u0e01\u0e23\u0e49\u0e2d\u0e19";
+  return typeof value === "string" && value === misspelled ? corrected : value;
+}
+
+function normalizeLeaveData(value){
+  if (Array.isArray(value)) return value.map(normalizeLeaveData);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeLeaveData(item)]));
+  }
+  return normalizeLeaveText(value);
+}
+
 async function api(url, options){
   const res = await fetch(url, options);
   const data = await res.json();
   if(!res.ok) throw new Error(data.message || "เกิดข้อผิดพลาด");
-  return data;
+  return normalizeLeaveData(data);
 }
 
 function showPage(page){
@@ -129,12 +143,15 @@ function showPage(page){
 async function loadDashboard(){
   try{
     const data = await api(`/api/dashboard/${user.EMPLOYEE_ID}`);
+    const isManager = user.ROLE === "SUPERVISOR" || user.ROLE === "DEPARTMENT_MANAGER";
+    document.querySelector("#dashboardPage .grid-2 .card .card-title").textContent =
+      isManager ? "รายการลาล่าสุดของพนักงาน" : "รายการลาล่าสุด";
     document.getElementById("stats").innerHTML = `
-      <div class="stat"><div><div class="stat-label">ใบลาทั้งหมด</div><div class="stat-value">${data.stats.total}</div></div><div class="stat-icon">📄</div></div>
-      <div class="stat"><div><div class="stat-label">รออนุมัติ</div><div class="stat-value">${data.stats.pending}</div></div><div class="stat-icon">⏳</div></div>
+      <div class="stat"><div><div class="stat-label">${isManager ? "ใบลาของพนักงาน" : "ใบลาทั้งหมด"}</div><div class="stat-value">${data.stats.total}</div></div><div class="stat-icon">📄</div></div>
+      <div class="stat"><div><div class="stat-label">${isManager ? "รออนุมัติจากคุณ" : "รออนุมัติ"}</div><div class="stat-value">${data.stats.pending}</div></div><div class="stat-icon">⏳</div></div>
       <div class="stat"><div><div class="stat-label">อนุมัติแล้ว</div><div class="stat-value">${data.stats.approved}</div></div><div class="stat-icon">✓</div></div>
-      <div class="stat"><div><div class="stat-label">วันลาคงเหลือ</div><div class="stat-value">${data.stats.remainingDays}</div></div><div class="stat-icon">📅</div></div>`;
-    renderRecent(data.recent);
+      <div class="stat"><div><div class="stat-label">${isManager ? "พนักงานในความดูแล" : "วันลาคงเหลือ"}</div><div class="stat-value">${isManager ? data.stats.employeeCount : data.stats.remainingDays}</div></div><div class="stat-icon">${isManager ? "👥" : "📅"}</div></div>`;
+    renderRecent(data.recent, isManager);
   }catch(err){ toast(err.message); }
 }
 
@@ -153,10 +170,13 @@ function fmtDate(v){
   if(!v) return "-";
   return new Date(v).toLocaleDateString("th-TH",{day:"numeric",month:"short",year:"numeric"});
 }
-function renderRecent(rows){
+function renderRecent(rows, isManager = false){
   if(!rows.length){document.getElementById("recentTable").innerHTML="<div class='notice'>ยังไม่มีรายการลา</div>";return;}
-  document.getElementById("recentTable").innerHTML = `<table><thead><tr><th>เลขที่</th><th>ประเภท</th><th>วันที่</th><th>สถานะ</th></tr></thead><tbody>
-    ${rows.map(r=>`<tr><td>${r.REQUEST_NO}</td><td>${r.LEAVE_TYPE_NAME}</td><td>${fmtDate(r.START_DATE)}</td><td>${statusBadge(r.STATUS)}</td></tr>`).join("")}
+  const headers = isManager
+    ? "<th>เลขที่</th><th>พนักงาน</th><th>ประเภท</th><th>วันที่ลา</th><th>สถานะ</th>"
+    : "<th>เลขที่</th><th>ประเภท</th><th>วันที่</th><th>สถานะ</th>";
+  document.getElementById("recentTable").innerHTML = `<table><thead><tr>${headers}</tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${escapeHtml(r.REQUEST_NO)}</td>${isManager ? `<td>${escapeHtml(r.EMPLOYEE_CODE)} ${escapeHtml(`${r.FIRST_NAME || ""} ${r.LAST_NAME || ""}`.trim())}</td>` : ""}<td>${escapeHtml(r.LEAVE_TYPE_NAME)}</td><td>${fmtDate(r.START_DATE)}${isManager && r.END_DATE && String(r.END_DATE)!==String(r.START_DATE) ? " - " + fmtDate(r.END_DATE) : ""}</td><td>${statusBadge(r.STATUS)}</td></tr>`).join("")}
   </tbody></table>`;
 }
 
@@ -174,7 +194,11 @@ function statusLabel(status){
 function statusStepState(status, step){
   if(status === "APPROVED") return "done";
   if(status === "REJECTED" || status === "CANCELLED") return step === 1 ? "bad" : "muted";
-  if(status === "PENDING_SUPERVISOR") return step === 1 ? "current" : "muted";
+  if(status === "PENDING_SUPERVISOR") {
+    if(step === 1) return "done";
+    if(step === 2) return "current";
+    return "muted";
+  }
   if(status === "PENDING_DEPARTMENT_MANAGER") {
     if(step === 1 || step === 2) return "done";
     if(step === 3) return "current";
@@ -208,7 +232,7 @@ function renderStatusCard(r){
     ["4", "เสร็จสิ้น"]
   ];
   return `
-    <div class="status-card">
+    <div class="status-card status-${String(r.STATUS || "").toLowerCase()}">
       <div class="status-card-head">
         <div>
           <div class="status-request-no">${r.REQUEST_NO || "-"}</div>
@@ -599,17 +623,23 @@ function renderHrChart(rows) {
     return acc;
   }, {});
 
+  const misspelledLeaveType = "\u0e25\u0e32\u0e1e\u0e31\u0e01\u0e23\u0e49\u0e2d";
+  const correctedLeaveType = "\u0e25\u0e32\u0e1e\u0e31\u0e01\u0e23\u0e49\u0e2d\u0e19";
+  if (typeSummary[misspelledLeaveType]) {
+    typeSummary[correctedLeaveType] = (typeSummary[correctedLeaveType] || 0) + typeSummary[misspelledLeaveType];
+    delete typeSummary[misspelledLeaveType];
+  }
   const entries = Object.entries(typeSummary);
   const width = canvas.width = canvas.clientWidth * 2;
   const height = canvas.height = 220;
   ctx.clearRect(0, 0, width, height);
   ctx.scale(1, 1);
-  ctx.fillStyle = "#ffffff";
+  ctx.fillStyle = "#fffdf8";
   ctx.fillRect(0, 0, width, height);
 
   if (!entries.length) {
     ctx.fillStyle = "#58677d";
-    ctx.font = "16px Arial";
+    ctx.font = "28px Arial";
     ctx.textAlign = "center";
     ctx.fillText("ไม่มีข้อมูลสำหรับแผนภูมิ", width / 2, height / 2);
     return;
@@ -624,7 +654,7 @@ function renderHrChart(rows) {
   const chartHeight = height - top - bottom;
   const barWidth = chartWidth / entries.length * 0.65;
 
-  ctx.strokeStyle = "#e5e7eb";
+  ctx.strokeStyle = "#eadfce";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(left, top);
@@ -636,17 +666,17 @@ function renderHrChart(rows) {
     const x = left + index * (chartWidth / entries.length) + (chartWidth / entries.length - barWidth) / 2;
     const barHeight = (count / maxValue) * chartHeight;
     const y = top + chartHeight - barHeight;
-    const colors = ["#2563eb", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6", "#14b8a6"];
+    const colors = ["#b47b3f", "#8f5c2f", "#d19a62", "#a96c38", "#c98b55", "#7f5635"];
 
     ctx.fillStyle = colors[index % colors.length];
     ctx.fillRect(x, y, barWidth, barHeight);
 
-    ctx.fillStyle = "#4b5563";
-    ctx.font = "12px Arial";
+    ctx.fillStyle = "#665b50";
+    ctx.font = "24px Arial";
     ctx.textAlign = "center";
     ctx.fillText(String(count), x + barWidth / 2, y - 8);
-    ctx.fillStyle = "#6b7280";
-    ctx.font = "10px Arial";
+    ctx.fillStyle = "#857667";
+    ctx.font = "20px Arial";
     ctx.fillText(label.length > 8 ? label.slice(0, 8) : label, x + barWidth / 2, height - 12);
   });
 }

@@ -10,11 +10,12 @@ const multer = require("multer");
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+const frontendDirectory = path.join(__dirname, "..", "frontend");
+app.use(express.static(frontendDirectory));
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || "0.0.0.0";
-const uploadDirectory = path.join(__dirname, "private_uploads");
+const uploadDirectory = path.join(__dirname, "..", "private_uploads");
 const allowedFileTypes = new Map([
   [".pdf", ["application/pdf"]],
   [".jpg", ["image/jpeg"]],
@@ -183,6 +184,48 @@ app.get("/api/dashboard/:employeeId", async (req, res) => {
     const employeeId = Number(req.params.employeeId);
     const employee = await getEmployee(employeeId);
     if (!employee) return res.status(404).json({ message: "ไม่พบพนักงาน" });
+
+    if (employee.ROLE === "SUPERVISOR" || employee.ROLE === "DEPARTMENT_MANAGER") {
+      const scope = employee.ROLE === "SUPERVISOR"
+        ? "e.supervisor_id = :employeeId AND e.employee_id <> :employeeId"
+        : "e.department_id = :departmentId AND e.employee_id <> :employeeId";
+      const binds = { employeeId };
+      if (employee.ROLE === "DEPARTMENT_MANAGER") binds.departmentId = employee.DEPARTMENT_ID;
+      const pendingStatus = employee.ROLE === "SUPERVISOR"
+        ? "PENDING_SUPERVISOR"
+        : "PENDING_DEPARTMENT_MANAGER";
+
+      const [all, pending, approved, employees, recent, unread] = await Promise.all([
+        query(`SELECT COUNT(*) AS CNT FROM leave_requests lr JOIN employees e ON e.employee_id = lr.employee_id WHERE ${scope}`, binds),
+        query(`SELECT COUNT(*) AS CNT FROM leave_requests lr JOIN employees e ON e.employee_id = lr.employee_id WHERE ${scope} AND lr.status = :pendingStatus`, { ...binds, pendingStatus }),
+        query(`SELECT COUNT(*) AS CNT FROM leave_requests lr JOIN employees e ON e.employee_id = lr.employee_id WHERE ${scope} AND lr.status = 'APPROVED'`, binds),
+        query(`SELECT COUNT(*) AS CNT FROM employees e WHERE ${scope} AND e.is_active = 'Y'`, binds),
+        query(`
+          SELECT * FROM (
+            SELECT lr.request_no, e.employee_code, e.first_name, e.last_name,
+                   lt.leave_type_name, lr.start_date, lr.end_date, lr.status
+            FROM leave_requests lr
+            JOIN employees e ON e.employee_id = lr.employee_id
+            JOIN leave_types lt ON lt.leave_type_id = lr.leave_type_id
+            WHERE ${scope}
+            ORDER BY lr.submitted_at DESC
+          ) WHERE ROWNUM <= 5
+        `, binds),
+        query(`SELECT COUNT(*) AS CNT FROM notifications WHERE employee_id = :employeeId AND is_read = 'N'`, { employeeId })
+      ]);
+
+      return res.json({
+        employee,
+        stats: {
+          total: all.rows[0].CNT,
+          pending: pending.rows[0].CNT,
+          approved: approved.rows[0].CNT,
+          employeeCount: employees.rows[0].CNT,
+          unread: unread.rows[0].CNT
+        },
+        recent: recent.rows
+      });
+    }
 
     const [all, pending, approved, balance, recent, unread] = await Promise.all([
       query(`SELECT COUNT(*) AS CNT FROM leave_requests WHERE employee_id = :employeeId`, { employeeId }),
@@ -854,7 +897,7 @@ app.get("/api/hr/requests", async (req, res) => {
 
 // ---------- Fallback ----------
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(frontendDirectory, "index.html"));
 });
 
 initDb()

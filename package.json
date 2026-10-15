@@ -1,0 +1,17 @@
+{
+  "name": "leave-management-system",
+  "version": "1.0.0",
+  "description": "Leave Management System - Oracle + Node.js",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "multer": "^2.4.0",
+    "oracledb": "^6.7.1"
+  }
+}
